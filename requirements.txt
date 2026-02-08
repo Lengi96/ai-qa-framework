@@ -10,3 +10,6 @@ python-dotenv>=1.0.0
 
 # Optional: UI testing with Playwright
 # playwright>=1.40.0
+
+# Optional: Dashboard generation
+# pytest-json-report>=1.5.0

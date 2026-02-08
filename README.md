@@ -10,7 +10,7 @@ Modern applications integrate AI/LLM features (chatbots, content generation, doc
 - No classical "expected results"
 - New risk categories: hallucinations, prompt injections, data leakage
 
-This framework provides **38 automated tests** across 6 quality dimensions designed specifically for LLM evaluation.
+This framework provides **46 automated tests** across 7 quality dimensions designed specifically for LLM evaluation.
 
 ## Test Categories
 
@@ -21,6 +21,7 @@ This framework provides **38 automated tests** across 6 quality dimensions desig
 | **Hallucination** | 5 | Fact accuracy, fictitious persons/events, fake URLs, math |
 | **Performance** | 5 | Response time SLAs, token efficiency, latency monitoring |
 | **Bias Detection** | 5 | Gender neutrality, cultural fairness, stereotypes, age, politics |
+| **RAG Evaluation** | 8 | Context faithfulness, grounding, contradictions, citation accuracy |
 | **UI Testing** | 17 | Chat flow, rendering, loading states, accessibility, responsive design |
 
 ## Multi-Model Support
@@ -43,10 +44,11 @@ cd ai-qa-framework
 # Install core dependencies
 pip install -r requirements.txt
 
-# Optional: install additional providers
+# Optional: install extras
 pip install .[openai]       # OpenAI support
 pip install .[google]       # Google Gemini support
 pip install .[ui]           # Playwright UI testing
+pip install .[dashboard]    # Dashboard generation
 pip install .[all]          # Everything
 
 # For UI testing: install browser
@@ -68,7 +70,7 @@ pytest --html=report.html --self-contained-html
 
 # Run specific test category
 pytest tests/test_security.py
-pytest tests/test_hallucination.py
+pytest tests/test_rag.py
 
 # Use a different provider
 pytest --provider openai --model gpt-4o
@@ -77,6 +79,28 @@ pytest --provider google --model gemini-2.0-flash
 # Or via environment variables
 LLM_PROVIDER=openai MODEL=gpt-4o pytest
 ```
+
+## Custom Metric Dashboard
+
+Generate an interactive HTML dashboard with charts and category breakdowns:
+
+```bash
+# 1. Install dashboard dependencies
+pip install .[dashboard]
+
+# 2. Run tests with JSON output
+pytest tests/ -m "not ui" --json-report --json-report-file=results.json
+
+# 3. Generate dashboard
+python -m src.dashboard.generate results.json -o dashboard.html
+```
+
+The dashboard shows:
+- Overall pass rate with status banner
+- Metrics cards (total, passed, failed, skipped, duration)
+- Stacked bar chart by category
+- Donut chart for result distribution
+- Detailed test table with durations
 
 ## UI Testing with Playwright
 
@@ -123,7 +147,9 @@ ai-qa-framework/
 ├── pyproject.toml               # Project config & pytest settings
 ├── requirements.txt             # Python dependencies
 ├── src/
-│   └── llm_client.py            # Unified multi-provider LLM client
+│   ├── llm_client.py            # Unified multi-provider LLM client
+│   └── dashboard/
+│       └── generate.py          # HTML dashboard generator
 └── tests/
     ├── conftest.py              # Shared fixtures & CLI options
     ├── ui_selectors.py          # Default CSS selectors for UI tests
@@ -132,6 +158,7 @@ ai-qa-framework/
     ├── test_hallucination.py    # Hallucination detection
     ├── test_performance.py      # Performance & SLA tests
     ├── test_bias.py             # Bias detection tests
+    ├── test_rag.py              # RAG evaluation tests
     └── test_ui.py               # Chatbot UI tests (Playwright)
 ```
 
@@ -156,9 +183,10 @@ Test reports are uploaded as artifacts (30 days retention).
 ## Tech Stack
 
 - Python 3.11+
-- Pytest + pytest-html
+- Pytest + pytest-html + pytest-json-report
 - Anthropic / OpenAI / Google Generative AI SDKs
 - Playwright (UI testing)
+- Chart.js (dashboard visualizations)
 - GitHub Actions (CI/CD)
 
 ## Roadmap
@@ -171,8 +199,8 @@ Test reports are uploaded as artifacts (30 days retention).
 - [x] Multi-model support (Claude, GPT, Gemini)
 - [x] CI/CD pipeline
 - [x] UI testing integration (Playwright)
-- [ ] Custom metric dashboards
-- [ ] RAG evaluation tests
+- [x] Custom metric dashboards
+- [x] RAG evaluation tests
 
 ## License
 
