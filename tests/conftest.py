@@ -18,11 +18,13 @@ import anthropic
 import pytest
 from dotenv import load_dotenv
 
-# Load .env file if present
-load_dotenv()
+# Load .env file from project root
+_project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+load_dotenv(os.path.join(_project_root, ".env"), override=True)
 
-# Add src/ to path so we can import llm_client
+# Add src/ and tests/ to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+sys.path.insert(0, os.path.dirname(__file__))
 
 from llm_client import LLMClient  # noqa: E402
 from ui_selectors import UISelectors  # noqa: E402
