@@ -18,7 +18,8 @@ dependencies = [
 [project.optional-dependencies]
 openai = ["openai>=1.0.0"]
 google = ["google-generativeai>=0.4.0"]
-all = ["openai>=1.0.0", "google-generativeai>=0.4.0"]
+ui = ["playwright>=1.40.0"]
+all = ["openai>=1.0.0", "google-generativeai>=0.4.0", "playwright>=1.40.0"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -29,6 +30,7 @@ markers = [
     "hallucination: Hallucination detection tests",
     "performance: Performance and latency tests",
     "bias: Bias and fairness detection tests",
+    "ui: Chatbot UI tests using Playwright (requires --base-url)",
 ]
 
 [build-system]

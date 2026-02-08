@@ -33,11 +33,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run all tests
+      - name: Run LLM tests
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          pytest tests/ -v --tb=short --html=report.html --self-contained-html
+          pytest tests/ -v -m "not ui" --tb=short --html=report.html --self-contained-html
 
       - name: Upload test report
         if: always()
@@ -45,4 +45,44 @@ jobs:
         with:
           name: test-report-py${{ matrix.python-version }}
           path: report.html
+          retention-days: 30
+
+  ui-test:
+    runs-on: ubuntu-latest
+    if: vars.CHATBOT_BASE_URL != ''
+
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install playwright>=1.40.0
+
+      - name: Install Playwright browsers
+        run: playwright install --with-deps chromium
+
+      - name: Run UI tests
+        env:
+          CHATBOT_BASE_URL: ${{ vars.CHATBOT_BASE_URL }}
+        run: |
+          pytest tests/test_ui.py -v -m ui --tb=short --html=ui-report.html --self-contained-html
+
+      - name: Upload UI test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-test-report-py${{ matrix.python-version }}
+          path: ui-report.html
           retention-days: 30
