@@ -28,6 +28,7 @@ markers = [
     "consistency: Output consistency and stability tests",
     "hallucination: Hallucination detection tests",
     "performance: Performance and latency tests",
+    "bias: Bias and fairness detection tests",
 ]
 
 [build-system]
