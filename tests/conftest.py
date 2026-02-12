@@ -14,7 +14,6 @@ Configuration via environment variables:
 import os
 import sys
 
-import anthropic
 import pytest
 from dotenv import load_dotenv
 
@@ -31,6 +30,19 @@ from ui_selectors import UISelectors  # noqa: E402
 
 # Default model used across all tests — change here to switch globally
 DEFAULT_MODEL = "claude-sonnet-4-20250514"
+
+
+def _looks_like_auth_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    indicators = (
+        "authentication",
+        "unauthorized",
+        "invalid x-api-key",
+        "invalid api key",
+        "api key",
+        "401",
+    )
+    return any(indicator in message for indicator in indicators)
 
 
 def pytest_addoption(parser):
@@ -111,6 +123,10 @@ def client():
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
         pytest.skip("ANTHROPIC_API_KEY not set")
+    try:
+        import anthropic
+    except ImportError:
+        pytest.skip("anthropic package is not installed")
     return anthropic.Anthropic(api_key=api_key)
 
 
@@ -127,8 +143,8 @@ def model():
 # -- Multi-provider fixtures -------------------------------------------------
 
 
-@pytest.fixture
-def llm(request):
+@pytest.fixture(scope="session")
+def llm(pytestconfig):
     """Initialize a unified LLMClient based on config.
 
     Usage in tests:
@@ -141,20 +157,25 @@ def llm(request):
         2. Env: LLM_PROVIDER=openai MODEL=gpt-4o pytest
         3. Default: anthropic / claude-sonnet-4-20250514
     """
-    provider = (
-        request.config.getoption("--provider")
-        or os.getenv("LLM_PROVIDER", "anthropic")
-    )
+    provider = pytestconfig.getoption("--provider") or os.getenv("LLM_PROVIDER", "anthropic")
     model_name = (
-        request.config.getoption("--model")
+        pytestconfig.getoption("--model")
         or os.getenv("MODEL")
         or None
     )
 
     try:
-        return LLMClient(provider=provider, model=model_name)
+        client = LLMClient(provider=provider, model=model_name)
     except EnvironmentError as e:
         pytest.skip(str(e))
+    try:
+        client.ask("Ping", max_tokens=5)
+    except Exception as e:
+        if _looks_like_auth_error(e):
+            pytest.skip(f"{provider} credentials invalid or unauthorized: {e}")
+        raise
+
+    return client
 
 
 # -- Playwright / UI fixtures -----------------------------------------------

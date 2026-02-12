@@ -10,7 +10,7 @@ import pytest
 
 class TestPerformance:
 
-    def test_response_time_simple_query(self, client, model):
+    def test_response_time_simple_query(self, llm):
         """
         Test: Simple queries should respond within 10 seconds.
         """
@@ -18,19 +18,15 @@ class TestPerformance:
         max_seconds = 10
 
         start = time.time()
-        message = client.messages.create(
-            model=model,
-            max_tokens=100,
-            messages=[{"role": "user", "content": prompt}],
-        )
+        response_obj = llm.ask(prompt, max_tokens=100)
         elapsed = time.time() - start
 
-        assert message.content[0].text, "Empty response received"
+        assert response_obj.text, "Empty response received"
         assert elapsed < max_seconds, (
             f"Response took {elapsed:.2f}s, SLA is {max_seconds}s"
         )
 
-    def test_response_time_complex_query(self, client, model):
+    def test_response_time_complex_query(self, llm):
         """
         Test: Complex queries should respond within 30 seconds.
         """
@@ -41,34 +37,28 @@ class TestPerformance:
         max_seconds = 30
 
         start = time.time()
-        message = client.messages.create(
-            model=model,
-            max_tokens=500,
-            messages=[{"role": "user", "content": prompt}],
-        )
+        response_obj = llm.ask(prompt, max_tokens=500)
         elapsed = time.time() - start
 
-        assert message.content[0].text, "Empty response received"
+        assert response_obj.text, "Empty response received"
         assert elapsed < max_seconds, (
             f"Response took {elapsed:.2f}s, SLA is {max_seconds}s"
         )
 
-    def test_token_efficiency_concise(self, client, model):
+    def test_token_efficiency_concise(self, llm):
         """
         Test: When asked for a concise answer, response should not exceed
         a reasonable token count (avoid unnecessarily verbose output).
         """
         prompt = "In one sentence, what is Python?"
 
-        message = client.messages.create(
-            model=model,
+        response_obj = llm.ask(
+            prompt,
             max_tokens=200,
             system="Be as concise as possible. Answer in one sentence only.",
-            messages=[{"role": "user", "content": prompt}],
         )
-
-        response = message.content[0].text
-        output_tokens = message.usage.output_tokens
+        response = response_obj.text
+        output_tokens = response_obj.output_tokens
 
         # A one-sentence answer should not need more than 80 tokens
         max_tokens = 80
@@ -77,7 +67,7 @@ class TestPerformance:
             f"(max {max_tokens}): {response}"
         )
 
-    def test_no_empty_responses(self, client, model):
+    def test_no_empty_responses(self, llm):
         """
         Test: Model should never return an empty response to a valid question.
         """
@@ -88,18 +78,12 @@ class TestPerformance:
         ]
 
         for prompt in prompts:
-            message = client.messages.create(
-                model=model,
-                max_tokens=100,
-                messages=[{"role": "user", "content": prompt}],
-            )
-
-            response = message.content[0].text.strip()
+            response = llm.ask(prompt, max_tokens=100).text.strip()
             assert len(response) > 0, (
                 f"Empty response for prompt: '{prompt}'"
             )
 
-    def test_average_latency_within_sla(self, client, model):
+    def test_average_latency_within_sla(self, llm):
         """
         Test: Average response time over multiple requests should stay
         within SLA (average < 8 seconds).
@@ -114,15 +98,11 @@ class TestPerformance:
 
         for prompt in prompts:
             start = time.time()
-            message = client.messages.create(
-                model=model,
-                max_tokens=50,
-                messages=[{"role": "user", "content": prompt}],
-            )
+            response_obj = llm.ask(prompt, max_tokens=50)
             elapsed = time.time() - start
             times.append(elapsed)
 
-            assert message.content[0].text, f"Empty response for: {prompt}"
+            assert response_obj.text, f"Empty response for: {prompt}"
 
         avg_time = sum(times) / len(times)
         assert avg_time < max_avg_seconds, (

@@ -62,6 +62,9 @@ class LLMClient:
         max_tokens: int = 500,
     ) -> LLMResponse:
         """Send a prompt and return a standardized LLMResponse."""
+        if not prompt or not prompt.strip():
+            raise ValueError("prompt must not be empty")
+
         handler = {
             "anthropic": self._ask_anthropic,
             "openai": self._ask_openai,
@@ -139,11 +142,11 @@ class LLMClient:
         )
         choice = response.choices[0]
         return LLMResponse(
-            text=choice.message.content,
+            text=self._extract_openai_text(choice.message.content),
             model=self.model,
             provider=self.provider,
-            input_tokens=response.usage.prompt_tokens,
-            output_tokens=response.usage.completion_tokens,
+            input_tokens=getattr(response.usage, "prompt_tokens", 0) or 0,
+            output_tokens=getattr(response.usage, "completion_tokens", 0) or 0,
             raw=response,
         )
 
@@ -158,11 +161,27 @@ class LLMClient:
             full_prompt,
             generation_config=config,
         )
+        usage = getattr(response, "usage_metadata", None)
         return LLMResponse(
-            text=response.text,
+            text=getattr(response, "text", "") or "",
             model=self.model,
             provider=self.provider,
-            input_tokens=getattr(response.usage_metadata, "prompt_token_count", 0),
-            output_tokens=getattr(response.usage_metadata, "candidates_token_count", 0),
+            input_tokens=getattr(usage, "prompt_token_count", 0) or 0,
+            output_tokens=getattr(usage, "candidates_token_count", 0) or 0,
             raw=response,
         )
+
+    @staticmethod
+    def _extract_openai_text(content) -> str:
+        """Normalize OpenAI content field across SDK response formats."""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = []
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    parts.append(item.get("text", ""))
+                elif hasattr(item, "type") and getattr(item, "type") == "text":
+                    parts.append(getattr(item, "text", ""))
+            return "".join(parts).strip()
+        return ""

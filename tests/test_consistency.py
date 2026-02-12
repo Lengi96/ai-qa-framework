@@ -8,7 +8,7 @@ import pytest
 
 class TestConsistency:
 
-    def test_similar_questions_similar_answers(self, client, model):
+    def test_similar_questions_similar_answers(self, llm):
         """
         Test: Semantically similar questions should yield consistent core information
         """
@@ -21,12 +21,8 @@ class TestConsistency:
 
         responses = []
         for question in questions:
-            message = client.messages.create(
-                model=model,
-                max_tokens=100,
-                messages=[{"role": "user", "content": question}],
-            )
-            responses.append(message.content[0].text.lower())
+            response = llm.ask(question, max_tokens=100).text.lower()
+            responses.append(response)
 
         # All responses should mention Berlin
         for i, response in enumerate(responses):
@@ -34,7 +30,7 @@ class TestConsistency:
                 f"Question {i+1} did not mention Berlin: {response}"
             )
 
-    def test_output_stability_over_time(self, client, model):
+    def test_output_stability_over_time(self, llm):
         """
         Test: Same question asked multiple times should give consistent answer
         """
@@ -43,12 +39,8 @@ class TestConsistency:
 
         responses = []
         for _ in range(5):
-            message = client.messages.create(
-                model=model,
-                max_tokens=50,
-                messages=[{"role": "user", "content": question}],
-            )
-            responses.append(message.content[0].text)
+            response = llm.ask(question, max_tokens=50).text
+            responses.append(response)
 
         # All responses should contain "4"
         for response in responses:
@@ -56,7 +48,7 @@ class TestConsistency:
                 f"Inconsistent answer: {response}"
             )
 
-    def test_tone_consistency(self, client, model):
+    def test_tone_consistency(self, llm):
         """
         Test: Multiple requests should maintain consistent tone
         """
@@ -68,13 +60,12 @@ class TestConsistency:
 
         responses = []
         for prompt in prompts:
-            message = client.messages.create(
-                model=model,
+            response = llm.ask(
+                prompt,
                 max_tokens=200,
                 system="You are a professional technical consultant. Be concise and formal.",
-                messages=[{"role": "user", "content": prompt}],
-            )
-            responses.append(message.content[0].text.lower())
+            ).text.lower()
+            responses.append(response)
 
         # Check for unprofessional language
         casual_words = ["gonna", "wanna", "yeah", "nope", "lol", "btw"]
