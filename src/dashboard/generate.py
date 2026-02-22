@@ -21,6 +21,7 @@ import argparse
 import json
 import sys
 from datetime import datetime
+from html import escape
 from pathlib import Path
 
 
@@ -79,6 +80,46 @@ def _extract_metrics(data: dict) -> dict:
     }
 
 
+def _format_timestamp(timestamp: object) -> str:
+    """Render the report timestamp as a human-readable local datetime."""
+    dt: datetime | None = None
+
+    if isinstance(timestamp, (int, float)):
+        dt = datetime.fromtimestamp(timestamp)
+    elif isinstance(timestamp, str):
+        raw = timestamp.strip()
+        if raw:
+            # Handle numeric timestamps represented as strings.
+            try:
+                dt = datetime.fromtimestamp(float(raw))
+            except ValueError:
+                # Handle ISO-like timestamps from pytest-json-report.
+                try:
+                    dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                except ValueError:
+                    dt = None
+
+    if dt is None:
+        dt = datetime.now()
+    return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _stringify_message(message: object) -> str:
+    """Normalize pytest longrepr payloads into readable text."""
+    if message is None:
+        return ""
+    if isinstance(message, str):
+        return message
+    if isinstance(message, list):
+        return "\n".join(str(item) for item in message)
+    if isinstance(message, dict):
+        try:
+            return json.dumps(message, ensure_ascii=False, indent=2)
+        except (TypeError, ValueError):
+            return str(message)
+    return str(message)
+
+
 # -- HTML generation ---------------------------------------------------------
 
 
@@ -92,27 +133,93 @@ def _generate_html(metrics: dict) -> str:
     cat_failed = [categories[c]["failed"] for c in cat_labels]
     cat_skipped = [categories[c]["skipped"] for c in cat_labels]
 
-    # Build test detail rows
-    test_rows = ""
+    # Build test detail rows (failed first, then by category and name).
+    test_items: list[dict] = []
     for cat, data in categories.items():
         for test in data["tests"]:
-            outcome = test["outcome"]
-            badge_class = {
-                "passed": "badge-pass",
-                "failed": "badge-fail",
-                "skipped": "badge-skip",
-                "xfailed": "badge-skip",
-            }.get(outcome, "badge-skip")
+            test_items.append({
+                "category": cat,
+                **test,
+            })
 
-            duration_str = f"{test['duration']:.2f}s" if test["duration"] else "-"
+    outcome_order = {"failed": 0, "skipped": 1, "xfailed": 1, "passed": 2}
+    test_items.sort(
+        key=lambda item: (
+            outcome_order.get(item.get("outcome", ""), 9),
+            item.get("category", ""),
+            item.get("name", ""),
+        )
+    )
 
-            test_rows += f"""
-            <tr>
-                <td>{cat}</td>
-                <td>{test['name']}</td>
-                <td><span class="badge {badge_class}">{outcome}</span></td>
+    test_rows = ""
+    failure_links = ""
+    failure_count = 0
+    for test in test_items:
+        cat = test["category"]
+        name = test["name"]
+        outcome = test["outcome"]
+        test_id = f"{cat.lower()}-{name.lower()}".replace("_", "-")
+        badge_class = {
+            "passed": "badge-pass",
+            "failed": "badge-fail",
+            "skipped": "badge-skip",
+            "xfailed": "badge-skip",
+        }.get(outcome, "badge-skip")
+
+        duration_str = f"{test['duration']:.2f}s" if test["duration"] else "-"
+        message_text = _stringify_message(test.get("message"))
+        detail_html = ""
+        if outcome == "failed":
+            failure_count += 1
+            first_line = message_text.strip().splitlines()[0] if message_text.strip() else "No failure message."
+            failure_links += (
+                f'<li><a href="#{escape(test_id)}">{escape(cat)} / {escape(name)}</a>'
+                f' <span class="failure-snippet">{escape(first_line[:180])}</span></li>'
+            )
+            if message_text.strip():
+                detail_html = (
+                    "<details class=\"failure-details\">"
+                    "<summary>Failure details</summary>"
+                    f"<pre>{escape(message_text)}</pre>"
+                    "</details>"
+                )
+            else:
+                detail_html = "<p class=\"failure-empty\">No failure details captured.</p>"
+
+        test_rows += f"""
+            <tr id="{escape(test_id)}" data-category="{escape(cat.lower())}" data-outcome="{escape(outcome.lower())}" data-test="{escape(name.lower())}">
+                <td>{escape(cat)}</td>
+                <td>
+                    {escape(name)}
+                    {detail_html}
+                </td>
+                <td><span class="badge {badge_class}">{escape(outcome)}</span></td>
                 <td>{duration_str}</td>
             </tr>"""
+
+    formatted_timestamp = _format_timestamp(metrics["timestamp"])
+    chart_summary = (
+        f"Categories: {', '.join(cat_labels)}. "
+        f"Passed {metrics['passed']}, failed {metrics['failed']}, skipped {metrics['skipped']}."
+    )
+    failed_hint = (
+        f" | {metrics['failed']} failing test(s) - "
+        "<a href=\"#test-details\" id=\"showFailedLink\">show failed only</a>"
+        if metrics["failed"] > 0
+        else ""
+    )
+    failure_section = (
+        f"""
+    <section class="failure-section" aria-label="Failing tests overview">
+        <h3>Failing Tests ({failure_count})</h3>
+        <ul class="failure-list">
+            {failure_links}
+        </ul>
+    </section>
+"""
+        if failure_count > 0
+        else ""
+    )
 
     # Status color
     if metrics["pass_rate"] == 100:
@@ -163,6 +270,11 @@ def _generate_html(metrics: dict) -> str:
             font-size: 1.2rem;
             font-weight: 700;
             color: {status_color};
+        }}
+        .status-banner a {{
+            color: #f8fafc;
+            text-decoration: underline;
+            margin-left: 0.4rem;
         }}
         .metrics-grid {{
             display: grid;
@@ -240,6 +352,91 @@ def _generate_html(metrics: dict) -> str:
             color: #f8fafc;
             margin-bottom: 1rem;
         }}
+        .failure-section {{
+            background: #7f1d1d40;
+            border: 1px solid #ef4444;
+            border-radius: 8px;
+            padding: 1rem;
+            margin-bottom: 1rem;
+        }}
+        .failure-section h3 {{
+            color: #fecaca;
+            margin-bottom: 0.6rem;
+            font-size: 1rem;
+        }}
+        .failure-list {{
+            margin: 0;
+            padding-left: 1.25rem;
+        }}
+        .failure-list li {{
+            margin: 0.3rem 0;
+            color: #fee2e2;
+            line-height: 1.35;
+        }}
+        .failure-list a {{
+            color: #fca5a5;
+        }}
+        .failure-snippet {{
+            color: #cbd5e1;
+            margin-left: 0.3rem;
+            font-size: 0.85rem;
+        }}
+        .chart-summary {{
+            color: #94a3b8;
+            font-size: 0.85rem;
+            margin-top: 0.75rem;
+        }}
+        .table-controls {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.75rem;
+            margin-bottom: 0.75rem;
+            align-items: center;
+        }}
+        .table-controls label,
+        .table-controls .visible-count {{
+            color: #cbd5e1;
+            font-size: 0.85rem;
+        }}
+        .table-controls input[type="search"],
+        .table-controls select {{
+            background: #0f172a;
+            color: #e2e8f0;
+            border: 1px solid #475569;
+            border-radius: 6px;
+            padding: 0.4rem 0.55rem;
+        }}
+        .table-wrap {{
+            overflow-x: auto;
+        }}
+        #testTable {{
+            min-width: 640px;
+        }}
+        .failure-details {{
+            margin-top: 0.45rem;
+        }}
+        .failure-details summary {{
+            cursor: pointer;
+            color: #fca5a5;
+            font-size: 0.82rem;
+        }}
+        .failure-details pre {{
+            white-space: pre-wrap;
+            background: #0f172a;
+            border: 1px solid #475569;
+            border-radius: 6px;
+            padding: 0.6rem;
+            margin-top: 0.4rem;
+            color: #e2e8f0;
+            font-size: 0.78rem;
+            max-height: 280px;
+            overflow: auto;
+        }}
+        .failure-empty {{
+            margin-top: 0.45rem;
+            color: #cbd5e1;
+            font-size: 0.8rem;
+        }}
         .footer {{
             text-align: center;
             color: #64748b;
@@ -249,16 +446,24 @@ def _generate_html(metrics: dict) -> str:
         @media (max-width: 768px) {{
             .charts-grid {{ grid-template-columns: 1fr; }}
             body {{ padding: 1rem; }}
+            .table-controls {{
+                flex-direction: column;
+                align-items: flex-start;
+            }}
+            th, td {{
+                padding: 0.6rem 0.75rem;
+            }}
         }}
     </style>
 </head>
 <body>
     <div class="header">
         <h1>AI QA Framework Dashboard</h1>
-        <div class="subtitle">Generated: {metrics['timestamp']}</div>
+        <div class="subtitle">Generated: {formatted_timestamp}</div>
     </div>
 
-    <div class="status-banner">{status_text} &mdash; {metrics['pass_rate']}% Pass Rate</div>
+    <div class="status-banner">{status_text} &mdash; {metrics['pass_rate']}% Pass Rate{failed_hint}</div>
+    {failure_section}
 
     <div class="metrics-grid">
         <div class="metric-card">
@@ -290,28 +495,43 @@ def _generate_html(metrics: dict) -> str:
     <div class="charts-grid">
         <div class="chart-card">
             <h3>Results by Category</h3>
-            <canvas id="categoryChart"></canvas>
+            <canvas id="categoryChart" role="img" aria-label="Stacked bar chart of test outcomes by category"></canvas>
         </div>
         <div class="chart-card">
             <h3>Overall Distribution</h3>
-            <canvas id="donutChart"></canvas>
+            <canvas id="donutChart" role="img" aria-label="Donut chart of overall pass, fail, and skip distribution"></canvas>
         </div>
     </div>
+    <p class="chart-summary">{escape(chart_summary)}</p>
 
-    <h3 class="section-title">Test Details</h3>
-    <table>
-        <thead>
-            <tr>
-                <th>Category</th>
-                <th>Test</th>
-                <th>Result</th>
-                <th>Duration</th>
-            </tr>
-        </thead>
-        <tbody>
-            {test_rows}
-        </tbody>
-    </table>
+    <h3 class="section-title" id="test-details">Test Details</h3>
+    <div class="table-controls">
+        <label><input type="checkbox" id="failedOnly"> Show failed only</label>
+        <label>Category
+            <select id="categoryFilter">
+                <option value="">All</option>
+            </select>
+        </label>
+        <label>Search test
+            <input type="search" id="testSearch" placeholder="e.g. age_neutral" />
+        </label>
+        <span class="visible-count" id="visibleCount"></span>
+    </div>
+    <div class="table-wrap">
+        <table id="testTable">
+            <thead>
+                <tr>
+                    <th>Category</th>
+                    <th>Test</th>
+                    <th>Result</th>
+                    <th>Duration</th>
+                </tr>
+            </thead>
+            <tbody>
+                {test_rows}
+            </tbody>
+        </table>
+    </div>
 
     <div class="footer">
         AI QA Framework &bull; Generated by dashboard.generate
@@ -379,6 +599,50 @@ def _generate_html(metrics: dict) -> str:
                 }},
             }},
         }});
+
+        const rows = Array.from(document.querySelectorAll('#testTable tbody tr'));
+        const failedOnly = document.getElementById('failedOnly');
+        const categoryFilter = document.getElementById('categoryFilter');
+        const testSearch = document.getElementById('testSearch');
+        const visibleCount = document.getElementById('visibleCount');
+        const showFailedLink = document.getElementById('showFailedLink');
+
+        const categories = Array.from(new Set(rows.map((row) => row.dataset.category))).sort();
+        categories.forEach((category) => {{
+            const option = document.createElement('option');
+            option.value = category;
+            option.textContent = category.charAt(0).toUpperCase() + category.slice(1);
+            categoryFilter.appendChild(option);
+        }});
+
+        function applyTableFilters() {{
+            const searchText = testSearch.value.trim().toLowerCase();
+            const selectedCategory = categoryFilter.value;
+            let visible = 0;
+
+            rows.forEach((row) => {{
+                const matchesFailed = !failedOnly.checked || row.dataset.outcome === 'failed';
+                const matchesCategory = !selectedCategory || row.dataset.category === selectedCategory;
+                const matchesSearch = !searchText || row.dataset.test.includes(searchText);
+                const show = matchesFailed && matchesCategory && matchesSearch;
+                row.style.display = show ? '' : 'none';
+                if (show) visible += 1;
+            }});
+
+            visibleCount.textContent = `${{visible}} / ${{rows.length}} tests shown`;
+        }}
+
+        failedOnly.addEventListener('change', applyTableFilters);
+        categoryFilter.addEventListener('change', applyTableFilters);
+        testSearch.addEventListener('input', applyTableFilters);
+        showFailedLink?.addEventListener('click', (event) => {{
+            event.preventDefault();
+            failedOnly.checked = true;
+            applyTableFilters();
+            document.getElementById('test-details').scrollIntoView({{ behavior: 'smooth' }});
+        }});
+
+        applyTableFilters();
     </script>
 </body>
 </html>"""

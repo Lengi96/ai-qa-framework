@@ -7,7 +7,7 @@ Supported providers:
     - google     (Gemini models)
 
 Usage:
-    client = LLMClient(provider="anthropic", model="claude-sonnet-4-20250514")
+    client = LLMClient(provider="anthropic", model="claude-haiku-4-5")
     response = client.ask("What is the capital of France?")
     response = client.ask("Be formal.", system="You are a consultant.")
 """
@@ -76,7 +76,7 @@ class LLMClient:
 
     def _default_model(self) -> str:
         defaults = {
-            "anthropic": "claude-sonnet-4-20250514",
+            "anthropic": "claude-haiku-4-5",
             "openai": "gpt-4o",
             "google": "gemini-2.0-flash",
         }
