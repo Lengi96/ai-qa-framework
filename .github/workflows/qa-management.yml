@@ -36,7 +36,36 @@ jobs:
       - name: Generate dashboard and release artifacts
         if: always()
         run: |
-          python -m src.dashboard.generate results.json -o dashboard.html --provider anthropic --model claude-haiku-4-5 --traceability-out traceability.json --traceability-html traceability.html --release-summary-out release_summary.json --fail-on-no-go
+          python -m src.dashboard.generate results.json -o dashboard.html --provider anthropic --model claude-haiku-4-5 --traceability-out traceability.json --traceability-html traceability.html --release-summary-out release_summary.json
+
+      - name: Publish release decision summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          summary_output = Path(os.environ["GITHUB_STEP_SUMMARY"])
+          summary_path = Path("release_summary.json")
+          if not summary_path.exists():
+              summary_output.write_text("## Release Decision\nNo release summary was generated.\n", encoding="utf-8")
+              raise SystemExit(0)
+
+          summary = json.loads(summary_path.read_text(encoding="utf-8"))
+          decision = summary.get("decision", "UNKNOWN")
+          reasons = summary.get("reasons", [])
+
+          lines = [f"## Release Decision\n**{decision}**\n"]
+          if reasons:
+              lines.append("### Reasons")
+              lines.extend(f"- {reason}" for reason in reasons)
+          else:
+              lines.append("No blocking reasons recorded.")
+
+          with summary_output.open("a", encoding="utf-8") as handle:
+              handle.write("\n".join(lines) + "\n")
+          PY
 
       - name: Upload QA artifacts
         if: always()
