@@ -809,3 +809,6 @@ def pytest_sessionfinish(session, exitstatus):
     except OSError:
         # Never fail a test run because report post-processing failed.
         pass
+
+collect_ignore = ['test_rag.py']
+

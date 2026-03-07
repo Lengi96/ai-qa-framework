@@ -12,7 +12,9 @@ dependencies = [
     "anthropic>=0.18.0",
     "pytest>=8.0.0",
     "pytest-html>=4.1.1",
+    "pytest-json-report>=1.5.0",
     "python-dotenv>=1.0.0",
+    "PyYAML>=6.0",
 ]
 
 [project.optional-dependencies]
@@ -26,6 +28,7 @@ all = ["openai>=1.0.0", "google-generativeai>=0.4.0", "playwright>=1.40.0", "pyt
 testpaths = ["tests"]
 addopts = "-v --tb=short"
 markers = [
+    "scenario: Data-driven LLM scenario tests",
     "security: Security-related tests (prompt injection, data leakage)",
     "consistency: Output consistency and stability tests",
     "hallucination: Hallucination detection tests",

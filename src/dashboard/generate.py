@@ -1,19 +1,4 @@
-"""
-Custom Metric Dashboard Generator for AI QA Framework.
-
-Reads pytest JSON results and generates a standalone HTML dashboard
-with charts, category breakdowns, and trend tracking.
-
-Usage:
-    # 1. Run tests with JSON output
-    pytest tests/ --json-report --json-report-file=results.json
-
-    # 2. Generate dashboard
-    python -m dashboard.generate results.json
-
-    # Or use the convenience script:
-    python -m dashboard.generate results.json -o dashboard.html
-"""
+﻿"""Dashboard and release artifact generator for the AI QA Framework."""
 
 from __future__ import annotations
 
@@ -24,665 +9,318 @@ from datetime import datetime
 from html import escape
 from pathlib import Path
 
-
-# -- Data extraction ---------------------------------------------------------
+from ..quality.reporting import (
+    build_traceability_report,
+    generate_traceability_html,
+    load_history,
+    write_json,
+)
+from ..quality.specs import load_quality_specs
 
 
 def _extract_metrics(data: dict) -> dict:
-    """Extract key metrics from pytest-json-report output."""
     summary = data.get("summary", {})
     tests = data.get("tests", [])
+    categories: dict[str, dict[str, int]] = {}
+
+    for test in tests:
+        nodeid = test.get("nodeid", "")
+        filename = nodeid.split("::")[0].split("/")[-1].split("\\")[-1]
+        category = filename.replace("test_", "").replace(".py", "").replace("_scenarios", "")
+        category = category.capitalize() if category else "Unknown"
+        bucket = categories.setdefault(category, {"passed": 0, "failed": 0, "skipped": 0})
+        outcome = test.get("outcome", "unknown")
+        if outcome == "passed":
+            bucket["passed"] += 1
+        elif outcome == "failed":
+            bucket["failed"] += 1
+        else:
+            bucket["skipped"] += 1
 
     total = summary.get("total", 0)
     passed = summary.get("passed", 0)
     failed = summary.get("failed", 0)
     skipped = summary.get("skipped", 0)
-    xfailed = summary.get("xfailed", 0)
-    duration = data.get("duration", 0)
-
-    # Group by category
-    categories = {}
-    for test in tests:
-        node_id = test.get("nodeid", "")
-        # Extract category from file name: tests/test_security.py -> security
-        parts = node_id.split("::")
-        if parts:
-            filename = parts[0].split("/")[-1].replace("test_", "").replace(".py", "")
-            cat = filename.capitalize()
-            if cat not in categories:
-                categories[cat] = {"passed": 0, "failed": 0, "skipped": 0, "tests": []}
-
-            outcome = test.get("outcome", "unknown")
-            if outcome == "passed":
-                categories[cat]["passed"] += 1
-            elif outcome == "failed":
-                categories[cat]["failed"] += 1
-            else:
-                categories[cat]["skipped"] += 1
-
-            categories[cat]["tests"].append({
-                "name": parts[-1] if len(parts) > 1 else node_id,
-                "outcome": outcome,
-                "duration": test.get("call", {}).get("duration", 0),
-                "message": test.get("call", {}).get("longrepr", ""),
-            })
-
     return {
         "total": total,
         "passed": passed,
         "failed": failed,
         "skipped": skipped,
-        "xfailed": xfailed,
-        "pass_rate": round(passed / total * 100, 1) if total > 0 else 0,
-        "duration": round(duration, 2),
-        "categories": categories,
+        "duration": round(float(data.get("duration", 0.0)), 2),
+        "pass_rate": round((passed / total) * 100, 1) if total else 0.0,
         "timestamp": data.get("created", datetime.now().isoformat()),
+        "categories": categories,
     }
 
 
 def _format_timestamp(timestamp: object) -> str:
-    """Render the report timestamp as a human-readable local datetime."""
-    dt: datetime | None = None
-
     if isinstance(timestamp, (int, float)):
         dt = datetime.fromtimestamp(timestamp)
-    elif isinstance(timestamp, str):
+    elif isinstance(timestamp, str) and timestamp.strip():
         raw = timestamp.strip()
-        if raw:
-            # Handle numeric timestamps represented as strings.
-            try:
-                dt = datetime.fromtimestamp(float(raw))
-            except ValueError:
-                # Handle ISO-like timestamps from pytest-json-report.
-                try:
-                    dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-                except ValueError:
-                    dt = None
-
-    if dt is None:
+        try:
+            dt = datetime.fromtimestamp(float(raw))
+        except ValueError:
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    else:
         dt = datetime.now()
     return dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _stringify_message(message: object) -> str:
-    """Normalize pytest longrepr payloads into readable text."""
-    if message is None:
-        return ""
-    if isinstance(message, str):
-        return message
-    if isinstance(message, list):
-        return "\n".join(str(item) for item in message)
-    if isinstance(message, dict):
-        try:
-            return json.dumps(message, ensure_ascii=False, indent=2)
-        except (TypeError, ValueError):
-            return str(message)
-    return str(message)
+def _release_color(decision: str) -> str:
+    return {
+        "GO": "#16a34a",
+        "GO WITH RISKS": "#d97706",
+        "NO-GO": "#dc2626",
+    }.get(decision, "#475569")
 
 
-# -- HTML generation ---------------------------------------------------------
-
-
-def _generate_html(metrics: dict) -> str:
-    """Generate a standalone HTML dashboard from metrics."""
-    categories = metrics["categories"]
-
-    # Build category chart data
-    cat_labels = list(categories.keys())
-    cat_passed = [categories[c]["passed"] for c in cat_labels]
-    cat_failed = [categories[c]["failed"] for c in cat_labels]
-    cat_skipped = [categories[c]["skipped"] for c in cat_labels]
-
-    # Build test detail rows (failed first, then by category and name).
-    test_items: list[dict] = []
-    for cat, data in categories.items():
-        for test in data["tests"]:
-            test_items.append({
-                "category": cat,
-                **test,
-            })
-
-    outcome_order = {"failed": 0, "skipped": 1, "xfailed": 1, "passed": 2}
-    test_items.sort(
-        key=lambda item: (
-            outcome_order.get(item.get("outcome", ""), 9),
-            item.get("category", ""),
-            item.get("name", ""),
+def _build_requirement_rows(traceability: dict) -> str:
+    rows = []
+    for requirement in traceability["requirements"]:
+        scenario_text = ", ".join(
+            f"{item['scenario_id']} ({item['outcome']})" for item in requirement["linked_scenarios"]
         )
-    )
+        status = "Passed" if requirement["passed"] else "Covered" if requirement["covered"] else "Gap"
+        rows.append(
+            f"<tr><td>{escape(requirement['id'])}</td>"
+            f"<td>{escape(requirement['title'])}</td>"
+            f"<td>{escape(requirement['risk'])}</td>"
+            f"<td>{escape(status)}</td>"
+            f"<td>{escape(scenario_text)}</td></tr>"
+        )
+    return "".join(rows)
 
-    test_rows = ""
-    failure_links = ""
-    failure_count = 0
-    for test in test_items:
-        cat = test["category"]
-        name = test["name"]
-        outcome = test["outcome"]
-        test_id = f"{cat.lower()}-{name.lower()}".replace("_", "-")
-        badge_class = {
-            "passed": "badge-pass",
-            "failed": "badge-fail",
-            "skipped": "badge-skip",
-            "xfailed": "badge-skip",
-        }.get(outcome, "badge-skip")
 
-        duration_str = f"{test['duration']:.2f}s" if test["duration"] else "-"
-        message_text = _stringify_message(test.get("message"))
-        detail_html = ""
-        if outcome == "failed":
-            failure_count += 1
-            first_line = message_text.strip().splitlines()[0] if message_text.strip() else "No failure message."
-            failure_links += (
-                f'<li><a href="#{escape(test_id)}">{escape(cat)} / {escape(name)}</a>'
-                f' <span class="failure-snippet">{escape(first_line[:180])}</span></li>'
-            )
-            if message_text.strip():
-                detail_html = (
-                    "<details class=\"failure-details\">"
-                    "<summary>Failure details</summary>"
-                    f"<pre>{escape(message_text)}</pre>"
-                    "</details>"
-                )
-            else:
-                detail_html = "<p class=\"failure-empty\">No failure details captured.</p>"
+def _build_risk_rows(traceability: dict) -> str:
+    rows = []
+    for risk, values in traceability["risk_summary"].items():
+        rows.append(
+            f"<tr><td>{escape(risk)}</td>"
+            f"<td>{values['covered']} / {values['total']}</td>"
+            f"<td>{values['coverage_rate']}%</td>"
+            f"<td>{values['pass_rate']}%</td></tr>"
+        )
+    return "".join(rows)
 
-        test_rows += f"""
-            <tr id="{escape(test_id)}" data-category="{escape(cat.lower())}" data-outcome="{escape(outcome.lower())}" data-test="{escape(name.lower())}">
-                <td>{escape(cat)}</td>
-                <td>
-                    {escape(name)}
-                    {detail_html}
-                </td>
-                <td><span class="badge {badge_class}">{escape(outcome)}</span></td>
-                <td>{duration_str}</td>
-            </tr>"""
 
-    formatted_timestamp = _format_timestamp(metrics["timestamp"])
-    chart_summary = (
-        f"Categories: {', '.join(cat_labels)}. "
-        f"Passed {metrics['passed']}, failed {metrics['failed']}, skipped {metrics['skipped']}."
-    )
-    failed_hint = (
-        f" | {metrics['failed']} failing test(s) - "
-        "<a href=\"#test-details\" id=\"showFailedLink\">show failed only</a>"
-        if metrics["failed"] > 0
-        else ""
-    )
-    failure_section = (
-        f"""
-    <section class="failure-section" aria-label="Failing tests overview">
-        <h3>Failing Tests ({failure_count})</h3>
-        <ul class="failure-list">
-            {failure_links}
-        </ul>
-    </section>
-"""
-        if failure_count > 0
-        else ""
-    )
+def _build_gap_items(traceability: dict) -> str:
+    items = []
+    for requirement_id in traceability["gaps"]["requirements_without_tests"]:
+        items.append(f"<li>{escape(requirement_id)} has no executed scenario coverage.</li>")
+    for requirement_id in traceability["gaps"]["failed_critical_requirements"]:
+        items.append(f"<li>{escape(requirement_id)} is critical and not fully passed.</li>")
+    for criterion_gap in traceability["gaps"]["untested_acceptance_criteria"]:
+        criteria = "; ".join(criterion_gap["criteria"])
+        items.append(
+            f"<li>{escape(criterion_gap['requirement_id'])} has untested acceptance criteria: {escape(criteria)}</li>"
+        )
+    return "".join(items) or "<li>No open gaps detected.</li>"
 
-    # Status color
-    if metrics["pass_rate"] == 100:
-        status_color = "#10b981"
-        status_text = "ALL PASSED"
-    elif metrics["pass_rate"] >= 80:
-        status_color = "#f59e0b"
-        status_text = "SOME FAILURES"
-    else:
-        status_color = "#ef4444"
-        status_text = "CRITICAL"
+
+def _build_history_rows(traceability: dict) -> str:
+    history = traceability.get("history", [])
+    if not history:
+        current = traceability["metadata"]
+        decision = traceability["release_summary"]["decision"]
+        return (
+            f"<tr><td>{escape(_format_timestamp(current['timestamp']))}</td>"
+            f"<td>{escape(current['provider'])}</td>"
+            f"<td>{escape(current['model'])}</td>"
+            f"<td>{traceability['test_summary']['overall_pass_rate']}%</td>"
+            f"<td>{escape(decision)}</td></tr>"
+        )
+
+    rows = []
+    for item in history:
+        rows.append(
+            f"<tr><td>{escape(_format_timestamp(item['timestamp']))}</td>"
+            f"<td>{escape(str(item.get('provider', 'n/a')))}</td>"
+            f"<td>{escape(str(item.get('model', 'n/a')))}</td>"
+            f"<td>{escape(str(item['overall_pass_rate']))}%</td>"
+            f"<td>{escape(str(item.get('decision', 'n/a')))}</td></tr>"
+        )
+    return "".join(rows)
+
+
+def _generate_html(metrics: dict, traceability: dict) -> str:
+    release = traceability["release_summary"]
+    release_color = _release_color(release["decision"])
+    chart_labels = list(metrics["categories"].keys())
+    chart_passed = [metrics["categories"][name]["passed"] for name in chart_labels]
+    chart_failed = [metrics["categories"][name]["failed"] for name in chart_labels]
+    chart_skipped = [metrics["categories"][name]["skipped"] for name in chart_labels]
 
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI QA Framework - Dashboard</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-    <style>
-        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-        body {{
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #0f172a;
-            color: #e2e8f0;
-            padding: 2rem;
-        }}
-        .header {{
-            text-align: center;
-            margin-bottom: 2rem;
-        }}
-        .header h1 {{
-            font-size: 1.8rem;
-            color: #f8fafc;
-            margin-bottom: 0.5rem;
-        }}
-        .header .subtitle {{
-            color: #94a3b8;
-            font-size: 0.9rem;
-        }}
-        .status-banner {{
-            background: {status_color}20;
-            border: 1px solid {status_color};
-            border-radius: 8px;
-            padding: 1rem;
-            text-align: center;
-            margin-bottom: 2rem;
-            font-size: 1.2rem;
-            font-weight: 700;
-            color: {status_color};
-        }}
-        .status-banner a {{
-            color: #f8fafc;
-            text-decoration: underline;
-            margin-left: 0.4rem;
-        }}
-        .metrics-grid {{
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-            gap: 1rem;
-            margin-bottom: 2rem;
-        }}
-        .metric-card {{
-            background: #1e293b;
-            border-radius: 8px;
-            padding: 1.5rem;
-            text-align: center;
-        }}
-        .metric-card .value {{
-            font-size: 2rem;
-            font-weight: 700;
-            color: #f8fafc;
-        }}
-        .metric-card .label {{
-            color: #94a3b8;
-            font-size: 0.85rem;
-            margin-top: 0.3rem;
-        }}
-        .metric-card .value.pass {{ color: #10b981; }}
-        .metric-card .value.fail {{ color: #ef4444; }}
-        .metric-card .value.skip {{ color: #f59e0b; }}
-        .charts-grid {{
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 1.5rem;
-            margin-bottom: 2rem;
-        }}
-        .chart-card {{
-            background: #1e293b;
-            border-radius: 8px;
-            padding: 1.5rem;
-        }}
-        .chart-card h3 {{
-            color: #f8fafc;
-            margin-bottom: 1rem;
-            font-size: 1rem;
-        }}
-        table {{
-            width: 100%;
-            border-collapse: collapse;
-            background: #1e293b;
-            border-radius: 8px;
-            overflow: hidden;
-        }}
-        th, td {{
-            padding: 0.75rem 1rem;
-            text-align: left;
-            border-bottom: 1px solid #334155;
-        }}
-        th {{
-            background: #334155;
-            color: #f8fafc;
-            font-weight: 600;
-            font-size: 0.85rem;
-            text-transform: uppercase;
-        }}
-        td {{ font-size: 0.9rem; }}
-        .badge {{
-            padding: 0.2rem 0.6rem;
-            border-radius: 4px;
-            font-size: 0.75rem;
-            font-weight: 600;
-            text-transform: uppercase;
-        }}
-        .badge-pass {{ background: #10b98120; color: #10b981; }}
-        .badge-fail {{ background: #ef444420; color: #ef4444; }}
-        .badge-skip {{ background: #f59e0b20; color: #f59e0b; }}
-        .section-title {{
-            font-size: 1.1rem;
-            color: #f8fafc;
-            margin-bottom: 1rem;
-        }}
-        .failure-section {{
-            background: #7f1d1d40;
-            border: 1px solid #ef4444;
-            border-radius: 8px;
-            padding: 1rem;
-            margin-bottom: 1rem;
-        }}
-        .failure-section h3 {{
-            color: #fecaca;
-            margin-bottom: 0.6rem;
-            font-size: 1rem;
-        }}
-        .failure-list {{
-            margin: 0;
-            padding-left: 1.25rem;
-        }}
-        .failure-list li {{
-            margin: 0.3rem 0;
-            color: #fee2e2;
-            line-height: 1.35;
-        }}
-        .failure-list a {{
-            color: #fca5a5;
-        }}
-        .failure-snippet {{
-            color: #cbd5e1;
-            margin-left: 0.3rem;
-            font-size: 0.85rem;
-        }}
-        .chart-summary {{
-            color: #94a3b8;
-            font-size: 0.85rem;
-            margin-top: 0.75rem;
-        }}
-        .table-controls {{
-            display: flex;
-            flex-wrap: wrap;
-            gap: 0.75rem;
-            margin-bottom: 0.75rem;
-            align-items: center;
-        }}
-        .table-controls label,
-        .table-controls .visible-count {{
-            color: #cbd5e1;
-            font-size: 0.85rem;
-        }}
-        .table-controls input[type="search"],
-        .table-controls select {{
-            background: #0f172a;
-            color: #e2e8f0;
-            border: 1px solid #475569;
-            border-radius: 6px;
-            padding: 0.4rem 0.55rem;
-        }}
-        .table-wrap {{
-            overflow-x: auto;
-        }}
-        #testTable {{
-            min-width: 640px;
-        }}
-        .failure-details {{
-            margin-top: 0.45rem;
-        }}
-        .failure-details summary {{
-            cursor: pointer;
-            color: #fca5a5;
-            font-size: 0.82rem;
-        }}
-        .failure-details pre {{
-            white-space: pre-wrap;
-            background: #0f172a;
-            border: 1px solid #475569;
-            border-radius: 6px;
-            padding: 0.6rem;
-            margin-top: 0.4rem;
-            color: #e2e8f0;
-            font-size: 0.78rem;
-            max-height: 280px;
-            overflow: auto;
-        }}
-        .failure-empty {{
-            margin-top: 0.45rem;
-            color: #cbd5e1;
-            font-size: 0.8rem;
-        }}
-        .footer {{
-            text-align: center;
-            color: #64748b;
-            font-size: 0.8rem;
-            margin-top: 2rem;
-        }}
-        @media (max-width: 768px) {{
-            .charts-grid {{ grid-template-columns: 1fr; }}
-            body {{ padding: 1rem; }}
-            .table-controls {{
-                flex-direction: column;
-                align-items: flex-start;
-            }}
-            th, td {{
-                padding: 0.6rem 0.75rem;
-            }}
-        }}
-    </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI QA Framework Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    body {{ font-family: 'Segoe UI', sans-serif; margin: 0; padding: 2rem; background: #0f172a; color: #e2e8f0; }}
+    h1, h2, h3 {{ color: #f8fafc; }}
+    .grid {{ display: grid; gap: 1rem; }}
+    .metrics {{ grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); margin-bottom: 1.5rem; }}
+    .two {{ grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); margin-bottom: 1.5rem; }}
+    .card {{ background: #1e293b; border-radius: 12px; padding: 1.25rem; box-shadow: 0 10px 30px rgba(15, 23, 42, 0.25); }}
+    .value {{ font-size: 2rem; font-weight: 700; color: #f8fafc; }}
+    .label {{ color: #94a3b8; font-size: 0.85rem; margin-top: 0.25rem; }}
+    .decision {{ border-left: 6px solid {release_color}; }}
+    table {{ width: 100%; border-collapse: collapse; margin-top: 0.75rem; }}
+    th, td {{ padding: 0.75rem; border-bottom: 1px solid #334155; text-align: left; vertical-align: top; }}
+    th {{ color: #cbd5e1; font-size: 0.82rem; text-transform: uppercase; }}
+    .banner {{ margin-bottom: 1.5rem; background: {release_color}22; border: 1px solid {release_color}; border-radius: 12px; padding: 1rem 1.25rem; }}
+    .banner strong {{ color: {release_color}; }}
+    ul {{ padding-left: 1.2rem; }}
+    a {{ color: #93c5fd; }}
+  </style>
 </head>
 <body>
-    <div class="header">
-        <h1>AI QA Framework Dashboard</h1>
-        <div class="subtitle">Generated: {formatted_timestamp}</div>
+  <div class="banner">
+    <strong>{escape(release['decision'])}</strong>
+    <div>Generated {_format_timestamp(metrics['timestamp'])} for provider {escape(traceability['metadata']['provider'])} / model {escape(traceability['metadata']['model'])}</div>
+  </div>
+
+  <div class="grid metrics">
+    <div class="card"><div class="value">{metrics['total']}</div><div class="label">Total Tests</div></div>
+    <div class="card"><div class="value">{metrics['passed']}</div><div class="label">Passed</div></div>
+    <div class="card"><div class="value">{metrics['failed']}</div><div class="label">Failed</div></div>
+    <div class="card"><div class="value">{metrics['pass_rate']}%</div><div class="label">Overall Pass Rate</div></div>
+    <div class="card"><div class="value">{traceability['requirement_summary']['coverage_rate']}%</div><div class="label">Requirement Coverage</div></div>
+    <div class="card"><div class="value">{traceability['release_summary']['actuals']['high_risk_coverage']}%</div><div class="label">High-Risk Coverage</div></div>
+  </div>
+
+  <div class="grid two">
+    <div class="card decision">
+      <h2>Release Decision</h2>
+      <p><strong>{escape(release['decision'])}</strong></p>
+      <ul>{''.join(f'<li>{escape(reason)}</li>' for reason in release['reasons']) or '<li>No blocking reasons recorded.</li>'}</ul>
+      <p><a href="traceability.html">Open traceability report</a></p>
     </div>
-
-    <div class="status-banner">{status_text} &mdash; {metrics['pass_rate']}% Pass Rate{failed_hint}</div>
-    {failure_section}
-
-    <div class="metrics-grid">
-        <div class="metric-card">
-            <div class="value">{metrics['total']}</div>
-            <div class="label">Total Tests</div>
-        </div>
-        <div class="metric-card">
-            <div class="value pass">{metrics['passed']}</div>
-            <div class="label">Passed</div>
-        </div>
-        <div class="metric-card">
-            <div class="value fail">{metrics['failed']}</div>
-            <div class="label">Failed</div>
-        </div>
-        <div class="metric-card">
-            <div class="value skip">{metrics['skipped']}</div>
-            <div class="label">Skipped</div>
-        </div>
-        <div class="metric-card">
-            <div class="value">{metrics['duration']}s</div>
-            <div class="label">Total Duration</div>
-        </div>
-        <div class="metric-card">
-            <div class="value">{metrics['pass_rate']}%</div>
-            <div class="label">Pass Rate</div>
-        </div>
+    <div class="card">
+      <h2>Requirement Summary</h2>
+      <table>
+        <tr><th>Total</th><td>{traceability['requirement_summary']['total']}</td></tr>
+        <tr><th>Covered</th><td>{traceability['requirement_summary']['covered']}</td></tr>
+        <tr><th>Passed</th><td>{traceability['requirement_summary']['passed']}</td></tr>
+        <tr><th>Critical Pass Rate</th><td>{traceability['requirement_summary']['critical_pass_rate']}%</td></tr>
+      </table>
     </div>
+  </div>
 
-    <div class="charts-grid">
-        <div class="chart-card">
-            <h3>Results by Category</h3>
-            <canvas id="categoryChart" role="img" aria-label="Stacked bar chart of test outcomes by category"></canvas>
-        </div>
-        <div class="chart-card">
-            <h3>Overall Distribution</h3>
-            <canvas id="donutChart" role="img" aria-label="Donut chart of overall pass, fail, and skip distribution"></canvas>
-        </div>
+  <div class="grid two">
+    <div class="card">
+      <h2>Category Results</h2>
+      <canvas id="categoryChart"></canvas>
     </div>
-    <p class="chart-summary">{escape(chart_summary)}</p>
-
-    <h3 class="section-title" id="test-details">Test Details</h3>
-    <div class="table-controls">
-        <label><input type="checkbox" id="failedOnly"> Show failed only</label>
-        <label>Category
-            <select id="categoryFilter">
-                <option value="">All</option>
-            </select>
-        </label>
-        <label>Search test
-            <input type="search" id="testSearch" placeholder="e.g. age_neutral" />
-        </label>
-        <span class="visible-count" id="visibleCount"></span>
+    <div class="card">
+      <h2>Open Gaps</h2>
+      <ul>{_build_gap_items(traceability)}</ul>
     </div>
-    <div class="table-wrap">
-        <table id="testTable">
-            <thead>
-                <tr>
-                    <th>Category</th>
-                    <th>Test</th>
-                    <th>Result</th>
-                    <th>Duration</th>
-                </tr>
-            </thead>
-            <tbody>
-                {test_rows}
-            </tbody>
-        </table>
+  </div>
+
+  <div class="grid two">
+    <div class="card">
+      <h2>Coverage by Risk</h2>
+      <table>
+        <thead><tr><th>Risk</th><th>Covered</th><th>Coverage</th><th>Pass</th></tr></thead>
+        <tbody>{_build_risk_rows(traceability)}</tbody>
+      </table>
     </div>
-
-    <div class="footer">
-        AI QA Framework &bull; Generated by dashboard.generate
+    <div class="card">
+      <h2>Provider / Model History</h2>
+      <table>
+        <thead><tr><th>Timestamp</th><th>Provider</th><th>Model</th><th>Pass Rate</th><th>Decision</th></tr></thead>
+        <tbody>{_build_history_rows(traceability)}</tbody>
+      </table>
     </div>
+  </div>
 
-    <script>
-        // Category stacked bar chart
-        new Chart(document.getElementById('categoryChart'), {{
-            type: 'bar',
-            data: {{
-                labels: {json.dumps(cat_labels)},
-                datasets: [
-                    {{
-                        label: 'Passed',
-                        data: {json.dumps(cat_passed)},
-                        backgroundColor: '#10b981',
-                    }},
-                    {{
-                        label: 'Failed',
-                        data: {json.dumps(cat_failed)},
-                        backgroundColor: '#ef4444',
-                    }},
-                    {{
-                        label: 'Skipped',
-                        data: {json.dumps(cat_skipped)},
-                        backgroundColor: '#f59e0b',
-                    }},
-                ],
-            }},
-            options: {{
-                responsive: true,
-                scales: {{
-                    x: {{
-                        stacked: true,
-                        ticks: {{ color: '#94a3b8' }},
-                        grid: {{ display: false }},
-                    }},
-                    y: {{
-                        stacked: true,
-                        ticks: {{ color: '#94a3b8', stepSize: 1 }},
-                        grid: {{ color: '#334155' }},
-                    }},
-                }},
-                plugins: {{
-                    legend: {{ labels: {{ color: '#e2e8f0' }} }},
-                }},
-            }},
-        }});
+  <div class="card">
+    <h2>Requirement Traceability</h2>
+    <table>
+      <thead><tr><th>Requirement</th><th>Title</th><th>Risk</th><th>Status</th><th>Linked Scenarios</th></tr></thead>
+      <tbody>{_build_requirement_rows(traceability)}</tbody>
+    </table>
+  </div>
 
-        // Donut chart
-        new Chart(document.getElementById('donutChart'), {{
-            type: 'doughnut',
-            data: {{
-                labels: ['Passed', 'Failed', 'Skipped'],
-                datasets: [{{
-                    data: [{metrics['passed']}, {metrics['failed']}, {metrics['skipped']}],
-                    backgroundColor: ['#10b981', '#ef4444', '#f59e0b'],
-                    borderWidth: 0,
-                }}],
-            }},
-            options: {{
-                responsive: true,
-                plugins: {{
-                    legend: {{ labels: {{ color: '#e2e8f0' }} }},
-                }},
-            }},
-        }});
-
-        const rows = Array.from(document.querySelectorAll('#testTable tbody tr'));
-        const failedOnly = document.getElementById('failedOnly');
-        const categoryFilter = document.getElementById('categoryFilter');
-        const testSearch = document.getElementById('testSearch');
-        const visibleCount = document.getElementById('visibleCount');
-        const showFailedLink = document.getElementById('showFailedLink');
-
-        const categories = Array.from(new Set(rows.map((row) => row.dataset.category))).sort();
-        categories.forEach((category) => {{
-            const option = document.createElement('option');
-            option.value = category;
-            option.textContent = category.charAt(0).toUpperCase() + category.slice(1);
-            categoryFilter.appendChild(option);
-        }});
-
-        function applyTableFilters() {{
-            const searchText = testSearch.value.trim().toLowerCase();
-            const selectedCategory = categoryFilter.value;
-            let visible = 0;
-
-            rows.forEach((row) => {{
-                const matchesFailed = !failedOnly.checked || row.dataset.outcome === 'failed';
-                const matchesCategory = !selectedCategory || row.dataset.category === selectedCategory;
-                const matchesSearch = !searchText || row.dataset.test.includes(searchText);
-                const show = matchesFailed && matchesCategory && matchesSearch;
-                row.style.display = show ? '' : 'none';
-                if (show) visible += 1;
-            }});
-
-            visibleCount.textContent = `${{visible}} / ${{rows.length}} tests shown`;
-        }}
-
-        failedOnly.addEventListener('change', applyTableFilters);
-        categoryFilter.addEventListener('change', applyTableFilters);
-        testSearch.addEventListener('input', applyTableFilters);
-        showFailedLink?.addEventListener('click', (event) => {{
-            event.preventDefault();
-            failedOnly.checked = true;
-            applyTableFilters();
-            document.getElementById('test-details').scrollIntoView({{ behavior: 'smooth' }});
-        }});
-
-        applyTableFilters();
-    </script>
+  <script>
+    new Chart(document.getElementById('categoryChart'), {{
+      type: 'bar',
+      data: {{
+        labels: {json.dumps(chart_labels)},
+        datasets: [
+          {{ label: 'Passed', data: {json.dumps(chart_passed)}, backgroundColor: '#10b981' }},
+          {{ label: 'Failed', data: {json.dumps(chart_failed)}, backgroundColor: '#ef4444' }},
+          {{ label: 'Skipped', data: {json.dumps(chart_skipped)}, backgroundColor: '#f59e0b' }},
+        ],
+      }},
+      options: {{
+        responsive: true,
+        scales: {{
+          x: {{ stacked: true, ticks: {{ color: '#cbd5e1' }}, grid: {{ display: false }} }},
+          y: {{ stacked: true, ticks: {{ color: '#cbd5e1', stepSize: 1 }}, grid: {{ color: '#334155' }} }},
+        }},
+        plugins: {{ legend: {{ labels: {{ color: '#e2e8f0' }} }} }},
+      }},
+    }});
+  </script>
 </body>
 </html>"""
 
 
-# -- CLI entry point ---------------------------------------------------------
-
-
-def main():
-    parser = argparse.ArgumentParser(
-        description="Generate AI QA Framework HTML dashboard from test results"
-    )
-    parser.add_argument(
-        "results_file",
-        help="Path to pytest JSON report file (pytest --json-report)",
-    )
-    parser.add_argument(
-        "-o", "--output",
-        default="dashboard.html",
-        help="Output HTML file (default: dashboard.html)",
-    )
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Generate dashboard and release-readiness artifacts")
+    parser.add_argument("results_file", help="Path to pytest JSON report file")
+    parser.add_argument("-o", "--output", default="dashboard.html", help="Output dashboard HTML")
+    parser.add_argument("--provider", default=None, help="Provider label for the current run")
+    parser.add_argument("--model", default=None, help="Model label for the current run")
+    parser.add_argument("--history-dir", default=None, help="Optional directory with prior pytest JSON reports")
+    parser.add_argument("--traceability-out", default="traceability.json", help="Traceability JSON output path")
+    parser.add_argument("--traceability-html", default="traceability.html", help="Traceability HTML output path")
+    parser.add_argument("--release-summary-out", default="release_summary.json", help="Release summary JSON output path")
+    parser.add_argument("--fail-on-no-go", action="store_true", help="Exit with code 1 when the decision is NO-GO")
     args = parser.parse_args()
 
     results_path = Path(args.results_file)
     if not results_path.exists():
         print(f"Error: Results file not found: {results_path}")
-        sys.exit(1)
+        return 1
 
-    with open(results_path) as f:
-        data = json.load(f)
+    with results_path.open(encoding="utf-8") as handle:
+        data = json.load(handle)
 
     metrics = _extract_metrics(data)
-    html = _generate_html(metrics)
+    requirements, scenarios, gates = load_quality_specs()
+    history = load_history(args.history_dir)
+    traceability = build_traceability_report(
+        data,
+        requirements,
+        scenarios,
+        gates,
+        provider=args.provider,
+        model=args.model,
+        history=history,
+    )
 
-    output_path = Path(args.output)
-    output_path.write_text(html, encoding="utf-8")
-    print(f"Dashboard generated: {output_path.resolve()}")
-    print(f"  Tests: {metrics['total']} | Passed: {metrics['passed']} | "
-          f"Failed: {metrics['failed']} | Pass Rate: {metrics['pass_rate']}%")
+    dashboard_html = _generate_html(metrics, traceability)
+    Path(args.output).write_text(dashboard_html, encoding="utf-8")
+    Path(args.traceability_html).write_text(generate_traceability_html(traceability), encoding="utf-8")
+    write_json(args.traceability_out, traceability)
+    write_json(args.release_summary_out, traceability["release_summary"])
+
+    print(f"Dashboard generated: {Path(args.output).resolve()}")
+    print(f"Traceability JSON: {Path(args.traceability_out).resolve()}")
+    print(f"Release summary: {Path(args.release_summary_out).resolve()}")
+    print(f"Decision: {traceability['release_summary']['decision']}")
+
+    if args.fail_on_no_go and traceability["release_summary"]["decision"] == "NO-GO":
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
+

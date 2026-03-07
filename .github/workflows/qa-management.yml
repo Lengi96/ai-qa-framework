@@ -1,0 +1,53 @@
+﻿name: QA Management Artifacts
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  release-readiness:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run scenario-based LLM suite
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          LLM_PROVIDER: anthropic
+          MODEL: claude-haiku-4-5
+        run: |
+          pytest tests/ -v -m "not ui" --tb=short --html=report.html --self-contained-html --json-report --json-report-file=results.json
+
+      - name: Generate dashboard and release artifacts
+        if: always()
+        run: |
+          python -m src.dashboard.generate results.json -o dashboard.html --provider anthropic --model claude-haiku-4-5 --traceability-out traceability.json --traceability-html traceability.html --release-summary-out release_summary.json --fail-on-no-go
+
+      - name: Upload QA artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-management-artifacts
+          path: |
+            report.html
+            results.json
+            dashboard.html
+            traceability.html
+            traceability.json
+            release_summary.json
+          retention-days: 30

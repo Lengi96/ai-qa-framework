@@ -1,0 +1,5 @@
+﻿quality_gates:
+  overall_pass_rate: 90
+  critical_requirements_pass_rate: 100
+  high_risk_coverage: 95
+  zero_failed_critical_requirements: true

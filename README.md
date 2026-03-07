@@ -209,3 +209,39 @@ MIT License - see [LICENSE](LICENSE) file
 ## Author
 
 **Christoph Lengowski** - IT Consultant specializing in QA & AI Testing
+
+## Requirements Traceability and Release Gates
+
+The framework now includes a requirements-driven management layer on top of the raw pytest suite.
+
+### New project assets
+
+- `requirements/*.yaml` define requirements with stable IDs, priorities, risks, acceptance criteria, linked scenarios, and release gates
+- `scenarios/*.yaml` define reusable test scenarios with prompts, expected/forbidden signals, severity, tags, and provider scope
+- `config/quality_gates.yaml` defines release-readiness thresholds
+
+### New generated artifacts
+
+Run the suite with JSON reporting and then generate the management artifacts:
+
+```bash
+pytest tests/ -m "not ui" --json-report --json-report-file=results.json
+python -m src.dashboard.generate results.json \
+  -o dashboard.html \
+  --provider anthropic \
+  --model claude-haiku-4-5 \
+  --traceability-out traceability.json \
+  --traceability-html traceability.html \
+  --release-summary-out release_summary.json
+```
+
+This produces:
+
+- `dashboard.html`: management dashboard with release decision, requirement coverage, risk coverage, gaps, and history table
+- `traceability.json`: machine-readable traceability matrix and gap analysis
+- `traceability.html`: human-readable traceability report
+- `release_summary.json`: release decision (`GO`, `GO WITH RISKS`, `NO-GO`) with reasons and thresholds
+
+### Data-driven scenario execution
+
+Security, hallucination, performance, and RAG checks are now backed by reusable scenario specifications rather than only hard-coded Python assertions. This makes the suite easier to review as a QA/Test-Management and Requirements-Engineering artifact.
