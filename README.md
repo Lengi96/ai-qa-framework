@@ -1,4 +1,26 @@
-# AI/LLM Quality Assurance Framework
+﻿# AI/LLM Quality Assurance Framework
+
+[![Latest Release](https://img.shields.io/github/v/release/Lengi96/ai-qa-framework)](https://github.com/Lengi96/ai-qa-framework/releases)
+[![QA Management Workflow](https://img.shields.io/github/actions/workflow/status/Lengi96/ai-qa-framework/qa-management.yml?branch=main&label=qa%20management)](https://github.com/Lengi96/ai-qa-framework/actions/workflows/qa-management.yml)
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
+
+Requirements-driven QA framework for evaluating Large Language Model (LLM) outputs with reusable scenarios, traceability, release gates, dashboards, and multi-model testing.
+
+## Why This Repo Stands Out
+
+- Requirements and acceptance criteria can be modeled as versioned YAML artifacts
+- Test scenarios for security, hallucination, performance, and RAG are reusable and data-driven
+- Every run can produce a dashboard, traceability matrix, and release decision summary
+- The framework supports Anthropic, OpenAI, and Google models through one client abstraction
+
+## Release Artifacts
+
+A full run can now generate management-ready outputs in addition to raw pytest results:
+
+- `dashboard.html` for QA and release-readiness overview
+- `traceability.json` and `traceability.html` for requirement-to-scenario traceability
+- `release_summary.json` for `GO`, `GO WITH RISKS`, or `NO-GO` decisions
+
 
 Automated testing framework for evaluating Large Language Model (LLM) outputs in production environments.
 
@@ -142,37 +164,37 @@ Default selectors cover common patterns (`data-testid`, typical class names, ARI
 
 ```
 ai-qa-framework/
-├── .env.example                 # API key & UI config template
-├── .github/workflows/tests.yml  # CI/CD pipeline (LLM + UI jobs)
-├── pyproject.toml               # Project config & pytest settings
-├── requirements.txt             # Python dependencies
-├── src/
-│   ├── llm_client.py            # Unified multi-provider LLM client
-│   └── dashboard/
-│       └── generate.py          # HTML dashboard generator
-└── tests/
-    ├── conftest.py              # Shared fixtures & CLI options
-    ├── ui_selectors.py          # Default CSS selectors for UI tests
-    ├── test_security.py         # Security tests
-    ├── test_consistency.py      # Consistency tests
-    ├── test_hallucination.py    # Hallucination detection
-    ├── test_performance.py      # Performance & SLA tests
-    ├── test_bias.py             # Bias detection tests
-    ├── test_rag.py              # RAG evaluation tests
-    └── test_ui.py               # Chatbot UI tests (Playwright)
+â”œâ”€â”€ .env.example                 # API key & UI config template
+â”œâ”€â”€ .github/workflows/tests.yml  # CI/CD pipeline (LLM + UI jobs)
+â”œâ”€â”€ pyproject.toml               # Project config & pytest settings
+â”œâ”€â”€ requirements.txt             # Python dependencies
+â”œâ”€â”€ src/
+â”‚   â”œâ”€â”€ llm_client.py            # Unified multi-provider LLM client
+â”‚   â””â”€â”€ dashboard/
+â”‚       â””â”€â”€ generate.py          # HTML dashboard generator
+â””â”€â”€ tests/
+    â”œâ”€â”€ conftest.py              # Shared fixtures & CLI options
+    â”œâ”€â”€ ui_selectors.py          # Default CSS selectors for UI tests
+    â”œâ”€â”€ test_security.py         # Security tests
+    â”œâ”€â”€ test_consistency.py      # Consistency tests
+    â”œâ”€â”€ test_hallucination.py    # Hallucination detection
+    â”œâ”€â”€ test_performance.py      # Performance & SLA tests
+    â”œâ”€â”€ test_bias.py             # Bias detection tests
+    â”œâ”€â”€ test_rag.py              # RAG evaluation tests
+    â””â”€â”€ test_ui.py               # Chatbot UI tests (Playwright)
 ```
 
 ## CI/CD
 
 GitHub Actions pipeline with two jobs:
 
-**LLM Tests** — runs automatically on:
+**LLM Tests** â€” runs automatically on:
 - Push to `main`
 - Pull requests
 - Weekly schedule (Monday 8:00 UTC)
 - Manual trigger
 
-**UI Tests** — runs only when `CHATBOT_BASE_URL` is configured as a repository variable.
+**UI Tests** â€” runs only when `CHATBOT_BASE_URL` is configured as a repository variable.
 
 Test reports are uploaded as artifacts (30 days retention).
 
@@ -245,3 +267,4 @@ This produces:
 ### Data-driven scenario execution
 
 Security, hallucination, performance, and RAG checks are now backed by reusable scenario specifications rather than only hard-coded Python assertions. This makes the suite easier to review as a QA/Test-Management and Requirements-Engineering artifact.
+
