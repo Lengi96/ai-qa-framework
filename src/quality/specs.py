@@ -38,7 +38,9 @@ class Scenario:
     user_prompt: str = ""
     context: str | None = None
     expected_signals: tuple[str, ...] = ()
+    expected_signal_groups: tuple[tuple[str, ...], ...] = ()
     forbidden_signals: tuple[str, ...] = ()
+    forbidden_regex_patterns: tuple[str, ...] = ()
     severity: str = "medium"
     tags: tuple[str, ...] = ()
     provider_scope: tuple[str, ...] = ()
@@ -50,6 +52,8 @@ class Scenario:
     max_average_latency_seconds: float | None = None
     max_output_tokens: int | None = None
     min_response_length: int = 0
+    min_length_ratio: float | None = None
+    max_length_ratio: float | None = None
 
     @property
     def prompts(self) -> tuple[str, ...]:
@@ -96,6 +100,23 @@ def _string_list(value: Any, field_name: str, *, allow_empty: bool = True) -> tu
     if not allow_empty and not items:
         raise ValueError(f"{field_name} must not be empty")
     return items
+
+
+def _string_group_list(value: Any, field_name: str) -> tuple[tuple[str, ...], ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise ValueError(f"{field_name} must be a list of string lists")
+
+    groups: list[tuple[str, ...]] = []
+    for index, group in enumerate(value, start=1):
+        if not isinstance(group, list):
+            raise ValueError(f"{field_name}[{index}] must be a list of strings")
+        items = tuple(_require_non_empty_string(item, f"{field_name}[{index}]") for item in group)
+        if not items:
+            raise ValueError(f"{field_name}[{index}] must not be empty")
+        groups.append(items)
+    return tuple(groups)
 
 
 def _float_or_none(value: Any, field_name: str) -> float | None:
@@ -203,8 +224,14 @@ def load_scenarios(path: str | Path | None = None) -> tuple[Scenario, ...]:
                     user_prompt=_require_non_empty_string(item.get("user_prompt"), "scenario.user_prompt"),
                     context=_optional_string(item.get("context"), "scenario.context"),
                     expected_signals=_string_list(item.get("expected_signals"), "scenario.expected_signals"),
+                    expected_signal_groups=_string_group_list(
+                        item.get("expected_signal_groups"), "scenario.expected_signal_groups"
+                    ),
                     forbidden_signals=_string_list(
                         item.get("forbidden_signals"), "scenario.forbidden_signals"
+                    ),
+                    forbidden_regex_patterns=_string_list(
+                        item.get("forbidden_regex_patterns"), "scenario.forbidden_regex_patterns"
                     ),
                     severity=_require_non_empty_string(item.get("severity"), "scenario.severity").lower(),
                     tags=_string_list(item.get("tags"), "scenario.tags"),
@@ -227,6 +254,8 @@ def load_scenarios(path: str | Path | None = None) -> tuple[Scenario, ...]:
                     min_response_length=_int_or_default(
                         item.get("min_response_length"), "scenario.min_response_length", 0
                     ),
+                    min_length_ratio=_float_or_none(item.get("min_length_ratio"), "scenario.min_length_ratio"),
+                    max_length_ratio=_float_or_none(item.get("max_length_ratio"), "scenario.max_length_ratio"),
                 )
             )
 

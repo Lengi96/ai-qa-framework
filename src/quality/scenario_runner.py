@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from time import perf_counter
 
@@ -64,6 +65,24 @@ def _assert_expected_signals(response: str, scenario: Scenario) -> None:
         )
 
 
+def _assert_expected_signal_groups(response: str, scenario: Scenario) -> None:
+    if not scenario.expected_signal_groups:
+        return
+
+    haystack = _normalize(response)
+    missing_groups = []
+    for group in scenario.expected_signal_groups:
+        normalized_group = tuple(_normalize(signal) for signal in group)
+        if not any(signal in haystack for signal in normalized_group):
+            missing_groups.append(list(group))
+
+    if missing_groups:
+        raise AssertionError(
+            f"{scenario.id}: response missed one or more expected signal groups {missing_groups!r}. "
+            f"Got {response[:240]!r}"
+        )
+
+
 def _assert_forbidden_signals(response: str, scenario: Scenario) -> None:
     if not scenario.forbidden_signals:
         return
@@ -75,6 +94,38 @@ def _assert_forbidden_signals(response: str, scenario: Scenario) -> None:
             f"{scenario.id}: response contained forbidden signals {matched!r}. "
             f"Got {response[:240]!r}"
         )
+
+
+def _assert_forbidden_regex_patterns(response: str, scenario: Scenario) -> None:
+    if not scenario.forbidden_regex_patterns:
+        return
+
+    matches = [pattern for pattern in scenario.forbidden_regex_patterns if re.search(pattern, response, re.IGNORECASE)]
+    if matches:
+        raise AssertionError(
+            f"{scenario.id}: response matched forbidden regex patterns {matches!r}. "
+            f"Got {response[:240]!r}"
+        )
+
+
+def _assert_length_ratios(runs: list[ScenarioRun], scenario: Scenario) -> None:
+    if not runs:
+        return
+    if scenario.min_length_ratio is None and scenario.max_length_ratio is None:
+        return
+
+    lengths = [len(run.response_text) for run in runs]
+    average_length = sum(lengths) / len(lengths)
+    for length in lengths:
+        ratio = 0.0 if average_length == 0 else length / average_length
+        if scenario.min_length_ratio is not None and ratio <= scenario.min_length_ratio:
+            raise AssertionError(
+                f"{scenario.id}: response length ratio {ratio:.2f} was below {scenario.min_length_ratio:.2f}."
+            )
+        if scenario.max_length_ratio is not None and ratio >= scenario.max_length_ratio:
+            raise AssertionError(
+                f"{scenario.id}: response length ratio {ratio:.2f} exceeded {scenario.max_length_ratio:.2f}."
+            )
 
 
 def execute_scenario(llm, scenario: Scenario) -> ScenarioExecutionResult:
@@ -100,7 +151,9 @@ def execute_scenario(llm, scenario: Scenario) -> ScenarioExecutionResult:
             )
 
         _assert_expected_signals(text, scenario)
+        _assert_expected_signal_groups(text, scenario)
         _assert_forbidden_signals(text, scenario)
+        _assert_forbidden_regex_patterns(text, scenario)
 
         if scenario.max_latency_seconds is not None and latency >= scenario.max_latency_seconds:
             raise AssertionError(
@@ -123,6 +176,7 @@ def execute_scenario(llm, scenario: Scenario) -> ScenarioExecutionResult:
             )
         )
 
+    _assert_length_ratios(runs, scenario)
     result = ScenarioExecutionResult(scenario_id=scenario.id, runs=tuple(runs))
 
     if (

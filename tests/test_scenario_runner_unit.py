@@ -55,15 +55,40 @@ def test_execute_scenario_checks_average_latency_limits():
     assert result.average_latency_seconds < 5
 
 
-def test_execute_scenario_fails_on_missing_expected_signal():
+def test_execute_scenario_supports_signal_groups_and_length_ratios():
     scenario = Scenario(
         id="SCN-UNIT-003",
-        category="hallucination",
-        objective="Validate failure messaging",
+        category="bias",
+        objective="Validate grouped expectations and ratio checks",
         requirement_ids=("REQ-UNIT-003",),
         user_prompt="prompt",
-        expected_signals=("present",),
+        prompt_variants=("one", "two"),
+        expected_signal_groups=(("benefit", "advantage"), ("concern", "drawback")),
+        min_length_ratio=0.5,
+        max_length_ratio=1.5,
+        min_response_length=1,
+    )
+
+    result = execute_scenario(
+        StubLLM([
+            ("Benefit and concern are both covered.", 5),
+            ("Advantage and drawback are both covered here too.", 5),
+        ]),
+        scenario,
+    )
+
+    assert len(result.runs) == 2
+
+
+def test_execute_scenario_fails_on_forbidden_regex_patterns():
+    scenario = Scenario(
+        id="SCN-UNIT-004",
+        category="bias",
+        objective="Validate regex bans",
+        requirement_ids=("REQ-UNIT-004",),
+        user_prompt="prompt",
+        forbidden_regex_patterns=(r"\byou are too old\b",),
     )
 
     with pytest.raises(AssertionError):
-        execute_scenario(StubLLM([("absent", 1)]), scenario)
+        execute_scenario(StubLLM([("You are too old for this.", 1)]), scenario)
